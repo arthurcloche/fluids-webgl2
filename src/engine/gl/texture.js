@@ -6,9 +6,14 @@ export class Texture2D {
     this.texture = gl.createTexture();
     this.unit = -1;
     this.bound = false;
+    this.data = data;
+    this.options = options;
     this.bindTexture();
 
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(
+      gl.UNPACK_FLIP_Y_WEBGL,
+      options.flipY !== undefined ? options.flipY : true
+    );
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
 
@@ -44,6 +49,22 @@ export class Texture2D {
 
     if (options.mipmap !== false) {
       gl.generateMipmap(gl.TEXTURE_2D);
+    }
+  }
+
+  setFlipY(flipY) {
+    this.bindTexture();
+    this.gl.pixelStorei(this.gl.UNPACK_FLIP_Y_WEBGL, flipY);
+    this.gl.texImage2D(
+      this.gl.TEXTURE_2D,
+      0,
+      this.options.internalformat || this.options.format || this.gl.RGBA,
+      this.options.format || this.gl.RGBA,
+      this.options.type || this.gl.UNSIGNED_BYTE,
+      this.data
+    );
+    if (this.options.mipmap !== false) {
+      this.gl.generateMipmap(this.gl.TEXTURE_2D);
     }
   }
 

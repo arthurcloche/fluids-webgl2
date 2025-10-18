@@ -4,7 +4,7 @@ import { InputHandler } from "./engine/input.js";
 import { debounce } from "./engine/utils.js";
 import { ShaderManager } from "./engine/gl/shader.js";
 import * as geometry from "./engine/gl/geometry.js";
-import { FBO } from "./engine/gl/texture.js";
+import { FBO, Texture2D } from "./engine/gl/texture.js";
 import { Mesh } from "./engine/gl/mesh.js";
 import * as glcontext from "./engine/gl/context.js";
 import { ComputeKernel } from "./compute.js";
@@ -28,13 +28,15 @@ const options = {
   mouse_force: 0.25,
   resolution: 0.5,
   cursor_size: 100,
-  step: 1 / 60,
+  step: 1 / 120,
   damping: 1.0,
+  divergence_scale: 0.5,
   // Visualization
   velocity_scale: 1.5,
   velocity_offset: 0.5,
   show_pressure: true,
   show_velocity: true,
+  render_mode: "fluidPlay", // "fluidPlay" or "visualize"
 };
 
 let gui;
@@ -51,6 +53,31 @@ if (gl) {
 
 function fail(el, msg, id) {
   console.error("WebGL initialization failed:", msg, id);
+}
+
+function createTextCanvas(width, height) {
+  const textCanvas = document.createElement("canvas");
+  textCanvas.width = width;
+  textCanvas.height = height;
+  const ctx = textCanvas.getContext("2d");
+
+  // White background
+  ctx.fillStyle = "white";
+  ctx.fillRect(0, 0, width, height);
+
+  // Black text
+  ctx.fillStyle = "black";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  // Calculate font size based on canvas dimensions
+  const fontSize = Math.min(width, height) * 0.08;
+  ctx.font = `${fontSize}px Arial, sans-serif`;
+
+  // Draw text in the center
+  ctx.fillText("Be water, my friend", width / 2, height / 2);
+
+  return textCanvas;
 }
 
 function hasFloatLuminanceFBOSupport() {
@@ -79,6 +106,9 @@ function init() {
     const simFolder = gui.addFolder("Simulation");
     simFolder.add(options, "iterations", 2, 128, 2).name("pressure iterations");
     simFolder.add(options, "damping", 0.9, 1.0, 0.001).name("velocity damping");
+    simFolder
+      .add(options, "divergence_scale", 0.0, 1.0, 0.01)
+      .name("divergence scale");
     simFolder
       .add(options, "step", {
         "1/1024": 1 / 1024,
@@ -111,6 +141,12 @@ function init() {
     visualFolder.close();
 
     const renderFolder = gui.addFolder("Rendering");
+    renderFolder
+      .add(options, "render_mode", {
+        "Fluid Play": "fluidPlay",
+        Visualize: "visualize",
+      })
+      .name("render mode");
     renderFolder
       .add(options, "resolution", {
         quarter: 0.25,
@@ -312,6 +348,7 @@ function setup(width, height, singleComponentFboFormat) {
     uniforms: {
       velocity: velocityFBO1,
       px: px,
+      divergence_scale: options.divergence_scale,
     },
     output: divergenceFBO,
   });
@@ -384,6 +421,32 @@ function setup(width, height, singleComponentFboFormat) {
     output: null,
   });
 
+  // Create text canvas and texture
+  const textCanvas = createTextCanvas(canvas.width, canvas.height);
+  const textTexture = new Texture2D(gl, textCanvas, {
+    format: gl.RGBA,
+    type: gl.UNSIGNED_BYTE,
+    wrap_s: gl.CLAMP_TO_EDGE,
+    min_filter: gl.LINEAR,
+    wrap_t: gl.CLAMP_TO_EDGE,
+    mag_filter: gl.LINEAR,
+    mipmap: false,
+  });
+
+  // Create fluid play kernel that uses the fluid simulation with the text
+  const fluidPlayKernel = new ComputeKernel(gl, {
+    shader: shaders.get("kernel", "fluidPlay"),
+    mesh: all,
+    uniforms: {
+      velocity: velocityFBO0,
+      pressure: pressureFBO0,
+      textTexture: textTexture,
+      px: px,
+      time: 0.0,
+    },
+    output: null,
+  });
+
   let x0 = input.mouse.x;
   let y0 = input.mouse.y;
 
@@ -411,6 +474,8 @@ function setup(width, height, singleComponentFboFormat) {
 
     addForceKernel.run();
     velocityBoundaryKernel.run();
+
+    divergenceKernel.uniforms.divergence_scale = options.divergence_scale;
     divergenceKernel.run();
 
     let p0 = pressureFBO0;
@@ -432,13 +497,19 @@ function setup(width, height, singleComponentFboFormat) {
     subtractPressureGradientKernel.run();
     subtractPressureGradientBoundaryKernel.run();
 
-    // Update visualization parameters
-    drawKernel.uniforms.velocity_scale = options.velocity_scale;
-    drawKernel.uniforms.velocity_offset = options.velocity_offset;
-    drawKernel.uniforms.show_pressure = options.show_pressure ? 1.0 : 0.0;
-    drawKernel.uniforms.show_velocity = options.show_velocity ? 1.0 : 0.0;
-
-    drawKernel.run();
+    // Render based on selected mode
+    if (options.render_mode === "fluidPlay") {
+      // Update fluid play shader with time
+      fluidPlayKernel.uniforms.time = clock.time * 0.001;
+      fluidPlayKernel.run();
+    } else {
+      // Update visualization parameters for drawKernel
+      drawKernel.uniforms.velocity_scale = options.velocity_scale;
+      drawKernel.uniforms.velocity_offset = options.velocity_offset;
+      drawKernel.uniforms.show_pressure = options.show_pressure ? 1.0 : 0.0;
+      drawKernel.uniforms.show_velocity = options.show_velocity ? 1.0 : 0.0;
+      drawKernel.run();
+    }
   };
 }
 
@@ -451,6 +522,7 @@ if (gl) {
       "shaders/jacobi.frag",
       "shaders/subtractPressureGradient.frag",
       "shaders/visualize.frag",
+      "shaders/fluidPlay.frag",
       "shaders/cursor.vertex",
       "shaders/boundary.vertex",
       "shaders/kernel.vertex",
